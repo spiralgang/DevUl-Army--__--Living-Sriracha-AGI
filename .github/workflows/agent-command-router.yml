@@ -17,9 +17,10 @@ jobs:
       
       - name: Parse command
         id: cmd
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
-          COMMENT_BODY="${{ github.event.comment.body }}"
-          echo "full_comment=${COMMENT_BODY}" >> $GITHUB_OUTPUT
+          echo "full_comment=$COMMENT_BODY" >> $GITHUB_OUTPUT
           
           # Extract command (first word starting with /)
           COMMAND=$(echo "$COMMENT_BODY" | grep -oE '^/[a-zA-Z-]+' | head -1)
