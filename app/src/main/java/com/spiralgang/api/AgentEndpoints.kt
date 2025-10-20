@@ -15,10 +15,10 @@ class AgentEndpoints {
         // Minimal stub implementation for assimilation compliance
         // TODO: Implement agent endpoints when API integration is active
         return mapOf(
-            "status" -> "stub_implementation",
-            "endpoint" -> endpoint,
-            "method" -> method,
-            "response" -> "pending_implementation"
+            "status" to "stub_implementation",
+            "endpoint" to endpoint,
+            "method" to method,
+            "response" to "pending_implementation"
         )
     }
     
@@ -27,9 +27,9 @@ class AgentEndpoints {
      */
     fun getAgentStatus(): Map<String, Any> {
         return mapOf(
-            "status" -> "online",
-            "implementation" -> "stub",
-            "endpoints_available" -> 0
+            "status" to "online",
+            "implementation" to "stub",
+            "endpoints_available" to 0
         )
     }
 }

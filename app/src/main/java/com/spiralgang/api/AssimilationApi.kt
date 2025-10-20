@@ -15,9 +15,9 @@ class AssimilationApi {
         // Minimal stub implementation for assimilation compliance
         // TODO: Implement assimilation API when integration is active
         return mapOf(
-            "status" -> "stub_implementation",
-            "action" -> action,
-            "result" -> "pending_implementation"
+            "status" to "stub_implementation",
+            "action" to action,
+            "result" to "pending_implementation"
         )
     }
     
@@ -26,10 +26,10 @@ class AssimilationApi {
      */
     fun getAssimilationStatus(): Map<String, Any> {
         return mapOf(
-            "completion_percentage" -> 0.0,
-            "files_assimilated" -> 0,
-            "files_pending" -> 20,
-            "implementation" -> "stub"
+            "completion_percentage" to 0.0,
+            "files_assimilated" to 0,
+            "files_pending" to 20,
+            "implementation" to "stub"
         )
     }
 }
