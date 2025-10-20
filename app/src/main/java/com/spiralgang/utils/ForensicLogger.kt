@@ -22,9 +22,9 @@ class ForensicLogger {
     fun getLogs(): List<Map<String, Any>> {
         return listOf(
             mapOf(
-                "ts" -> System.currentTimeMillis(),
-                "event" -> "stub_log",
-                "status" -> "implementation_pending"
+                "ts" to System.currentTimeMillis(),
+                "event" to "stub_log",
+                "status" to "implementation_pending"
             )
         )
     }
