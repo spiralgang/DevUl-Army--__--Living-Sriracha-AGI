@@ -22,9 +22,9 @@ class IntegrationEngine {
      */
     fun validateIntegration(): Map<String, Any> {
         return mapOf(
-            "status" -> "stub_implementation",
-            "completeness" -> 0.0,
-            "targets_validated" -> 0
+            "status" to "stub_implementation",
+            "completeness" to 0.0,
+            "targets_validated" to 0
         )
     }
 }
