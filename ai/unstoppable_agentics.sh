@@ -11,7 +11,7 @@ fi
 
 # unstoppable_agentics.sh - Unstoppable, reflexive, agentic filesystem traversal & deduplication runner
 #
-# Design: 
+# Design:
 #  - Autonomous, self-respawning, "mortal-immune" agent for large-scale, modular, auditable file system mapping/deduplication.
 #  - If interrupted (SIGINT/SIGTERM), agent restarts in place, logging cause and resuming from checkpoint.
 #  - Modular tasklets: traversal, dedupe, report generation. Plug-ins can be swapped at runtime.
@@ -27,141 +27,334 @@ fi
 #  - Auditability: every action, signal, error and restart is logged for post-run forensics
 #
 # See: /reference vault for standards, design patterns, and security principles
-#
+
 set -euo pipefail
 IFS=$'\n\t'
 
 AGENT_NAME="unstoppable_agentics"
 VERSION="2025-09-01-unstoppable"
-TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-OUTDIR="./agentic_map"
-LOG="$OUTDIR/${AGENT_NAME}_run_${TIMESTAMP}.log"
-CHECKPOINT="$OUTDIR/${AGENT_NAME}_checkpoint.json"
-PLUGINS_DIR="$OUTDIR/plugins"
-mkdir -p "$OUTDIR" "$PLUGINS_DIR"
+DEFAULT_OUTDIR="./agentic_map"
+DEFAULT_MAX_DEPTH=8
+DEFAULT_MAX_NODES=100000
 
-# Agentic options (parsed from args)
+OUTDIR_VALUE="$DEFAULT_OUTDIR"
+
+SCRIPT_PATH="$(readlink -f "$0")"
+TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+
 ROOTS=()
 DO_DEDUPE=false
-MAX_DEPTH=8
-MAX_NODES=100000
+MAX_DEPTH=$DEFAULT_MAX_DEPTH
+MAX_NODES=$DEFAULT_MAX_NODES
 DRY_RUN=true
 YES=false
 
-# Respawn control
 RESTART_LIMIT=1000
 RESTART_COUNT=0
+LAST_SIGNAL=""
 
-# --- Argument parsing ---
-while [ $# -gt 0 ]; do
+SANITIZED_ARGS=()
+LOG=""
+CHECKPOINT=""
+PLUGINS_DIR=""
+TRAVERSAL_COUNT=0
+DUPLICATE_REPORT=""
+
+usage() {
+  cat <<USAGE
+$0 [options]
+
+Options:
+  --root <path>        Add a traversal root (may be repeated). Defaults to repository root.
+  --outdir <path>      Directory for logs, checkpoints and reports (default: ${DEFAULT_OUTDIR}).
+  --max-depth <n>      Maximum directory depth to traverse (default: ${DEFAULT_MAX_DEPTH}).
+  --max-nodes <n>      Maximum filesystem nodes to inspect (default: ${DEFAULT_MAX_NODES}).
+  --dedupe             Enable duplicate detection report generation.
+  --run                Disable dry-run mode (required for any destructive actions).
+  --yes                Confirm irreversible actions when --run is supplied.
+  --help               Show this help message and exit.
+USAGE
+}
+
+ensure_positive_integer() {
+  [[ "$1" =~ ^[0-9]+$ ]] || { echo "Expected a non-negative integer, received '$1'" >&2; exit 2; }
+}
+
+while (($# > 0)); do
   case "$1" in
-    --root) ROOTS+=("$2"); shift 2 ;;
-    --dedupe) DO_DEDUPE=true; shift ;;
-    --outdir) OUTDIR="$2"; shift 2 ;;
-    --max-depth) MAX_DEPTH="$2"; shift 2 ;;
-    --max-nodes) MAX_NODES="$2"; shift 2 ;;
-    --run) DRY_RUN=false; shift ;;
-    --yes) YES=true; shift ;;
-    *) echo "Unknown arg: $1" >&2; exit 2 ;;
+    --root)
+      [[ $# -ge 2 ]] || { echo "Missing value for --root" >&2; exit 2; }
+      ROOTS+=("$2")
+      SANITIZED_ARGS+=("$1" "$2")
+      shift 2
+      ;;
+    --outdir)
+      [[ $# -ge 2 ]] || { echo "Missing value for --outdir" >&2; exit 2; }
+      OUTDIR_VALUE="$2"
+      SANITIZED_ARGS+=("$1" "$2")
+      shift 2
+      ;;
+    --max-depth)
+      [[ $# -ge 2 ]] || { echo "Missing value for --max-depth" >&2; exit 2; }
+      ensure_positive_integer "$2"
+      MAX_DEPTH="$2"
+      SANITIZED_ARGS+=("$1" "$2")
+      shift 2
+      ;;
+    --max-nodes)
+      [[ $# -ge 2 ]] || { echo "Missing value for --max-nodes" >&2; exit 2; }
+      ensure_positive_integer "$2"
+      MAX_NODES="$2"
+      SANITIZED_ARGS+=("$1" "$2")
+      shift 2
+      ;;
+    --dedupe)
+      DO_DEDUPE=true
+      SANITIZED_ARGS+=("$1")
+      shift
+      ;;
+    --run)
+      DRY_RUN=false
+      SANITIZED_ARGS+=("$1")
+      shift
+      ;;
+    --yes)
+      YES=true
+      SANITIZED_ARGS+=("$1")
+      shift
+      ;;
+    --restart-count)
+      [[ $# -ge 2 ]] || { echo "Missing value for --restart-count" >&2; exit 2; }
+      RESTART_COUNT="$2"
+      shift 2
+      ;;
+    --timestamp)
+      [[ $# -ge 2 ]] || { echo "Missing value for --timestamp" >&2; exit 2; }
+      TIMESTAMP="$2"
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown arg: $1" >&2
+      exit 2
+      ;;
   esac
 done
 
-[ "${#ROOTS[@]}" -gt 0 ] || ROOTS=("/")
+if [[ ${#ROOTS[@]} -eq 0 ]]; then
+  ROOTS=("$(pwd)")
+fi
 
-# --- Logging ---
-log() { printf '%s %s\n' "$(date '+%F %T')" "$*" | tee -a "$LOG"; }
-audit() { log "[AUDIT] $*"; }
-fatal() { log "[FATAL] $*"; exit 1; }
+OUTDIR="$OUTDIR_VALUE"
+PLUGINS_DIR="$OUTDIR/plugins"
+LOG="$OUTDIR/${AGENT_NAME}_run_${TIMESTAMP}.log"
+CHECKPOINT="$OUTDIR/${AGENT_NAME}_checkpoint.json"
+REPORT_PATH="$OUTDIR/report_${TIMESTAMP}.txt"
 
-# --- Respawn Mechanism ---
-agent_main() {
-  trap 'signal_handler SIGINT' SIGINT
-  trap 'signal_handler SIGTERM' SIGTERM
-  trap 'signal_handler SIGHUP' SIGHUP
-  trap 'signal_handler EXIT' EXIT
+mkdir -p "$OUTDIR" "$PLUGINS_DIR"
+touch "$LOG"
 
-  log "[$$] $AGENT_NAME v$VERSION starting (PID: $$, OUTDIR: $OUTDIR)"
-
-  run_tasklets
+log() {
+  local message
+  message="$(printf '%s %s\n' "$(date '+%F %T')" "$*")"
+  printf '%s\n' "$message" | tee -a "$LOG" >&2
 }
 
-signal_handler() {
-  sig="$1"
-  log "[$$] Agent received signal: $sig"
-  echo "{\"timestamp\": \"$(date '+%F %T')\", \"signal\": \"$sig\", \"pid\": $$, \"restart_count\": $RESTART_COUNT}" >> "$LOG"
-  if [ "$RESTART_COUNT" -lt "$RESTART_LIMIT" ]; then
-    RESTART_COUNT=$((RESTART_COUNT+1))
-    log "[$$] Agent respawning (restart #$RESTART_COUNT)"
-    exec "$0" "$@" --root "${ROOTS[@]}" ${DO_DEDUPE:+--dedupe} --outdir "$OUTDIR" --max-depth "$MAX_DEPTH" --max-nodes "$MAX_NODES" ${DRY_RUN:+--run} ${YES:+--yes}
-  else
-    fatal "Restart limit reached ($RESTART_LIMIT). Exiting."
+audit() {
+  log "[AUDIT] $*"
+}
+
+fatal() {
+  log "[FATAL] $*"
+  trap - EXIT
+  exit 1
+}
+
+write_checkpoint() {
+  cat >"$CHECKPOINT" <<JSON
+{
+  "timestamp": "$(date '+%F %T')",
+  "roots": $(printf '%s\n' "${ROOTS[@]}" | python3 -c 'import json,sys;print(json.dumps([l.rstrip("\n") for l in sys.stdin]))'),
+  "dedupe_enabled": ${DO_DEDUPE},
+  "last_signal": "${LAST_SIGNAL}",
+  "restart_count": ${RESTART_COUNT},
+  "max_depth": ${MAX_DEPTH},
+  "max_nodes": ${MAX_NODES},
+  "nodes_traversed": ${TRAVERSAL_COUNT},
+  "duplicate_report": "${DUPLICATE_REPORT}",
+  "dry_run": ${DRY_RUN}
+}
+JSON
+}
+
+request_restart() {
+  local reason="$1"
+  if (( RESTART_COUNT >= RESTART_LIMIT )); then
+    fatal "Restart limit reached (${RESTART_LIMIT}); aborting. Last reason: ${reason}"
   fi
+  RESTART_COUNT=$((RESTART_COUNT + 1))
+  log "[RESTART] Respawning due to ${reason} (restart #${RESTART_COUNT})"
+  trap - EXIT
+  exec "$SCRIPT_PATH" "${SANITIZED_ARGS[@]}" --restart-count "$RESTART_COUNT" --timestamp "$TIMESTAMP"
 }
 
-# --- Modular Tasklets ---
-run_tasklets() {
-  # 1. Traversal
-  traverse_filesystem
-  # 2. Dedupe (if enabled)
-  if [ "$DO_DEDUPE" = true ]; then
-    dedupe_files
+handle_signal() {
+  local sig="$1"
+  LAST_SIGNAL="$sig"
+  log "[SIGNAL] Received ${sig}"
+  printf '{"timestamp": "%s", "signal": "%s", "pid": %d, "restart_count": %d}\n' \
+    "$(date '+%F %T')" "$sig" "$$" "$RESTART_COUNT" >>"$LOG"
+  request_restart "signal ${sig}"
+}
+
+handle_exit() {
+  local status=$?
+  trap - EXIT
+  if (( status == 0 )); then
+    log "[EXIT] Agent completed successfully"
+    write_checkpoint
+    exit 0
   fi
-  # 3. Generate report
-  generate_report
-  log "[$$] Agent completed all tasklets"
+  log "[EXIT] Agent exiting with status ${status}"
+  write_checkpoint
+  request_restart "exit status ${status}"
 }
 
-# --- Traversal: Modular, resumable, logs every step ---
+trap 'handle_signal SIGINT' SIGINT
+trap 'handle_signal SIGTERM' SIGTERM
+trap 'handle_signal SIGHUP' SIGHUP
+trap 'handle_exit' EXIT
+
 traverse_filesystem() {
   log "[TASK] Traversal starting"
   local node_count=0
+  local root
   for root in "${ROOTS[@]}"; do
-    [ -d "$root" ] || continue
-    find "$root" -xdev -type f -o -type d 2>/dev/null | while read -r path; do
+    if [[ ! -d "$root" ]]; then
+      log "[WARN] Skipping non-directory root: $root"
+      continue
+    fi
+    while IFS= read -r path; do
       log "[TRAVERSE] $path"
-      node_count=$((node_count+1))
-      if [ "$node_count" -ge "$MAX_NODES" ]; then
-        audit "Traversal node limit reached ($MAX_NODES)"
-        break
+      node_count=$((node_count + 1))
+      if (( node_count >= MAX_NODES )); then
+        audit "Traversal node limit reached (${MAX_NODES})"
+        break 2
       fi
-    done
+    done < <(find "$root" -xdev -maxdepth "$MAX_DEPTH" \( -type f -o -type d \) 2>/dev/null)
   done
-  echo "{\"timestamp\": \"$(date '+%F %T')\", \"event\": \"traversal_complete\", \"nodes\": $node_count}" >> "$LOG"
+  TRAVERSAL_COUNT=$node_count
+  audit "Traversal completed: ${node_count} nodes"
 }
 
-# --- Deduplication: Modular, plug-in replaceable ---
 dedupe_files() {
   log "[TASK] Deduplication starting"
-  # Example: group files by size, then fast hash, then full hash
-  local tmp_dupes="$OUTDIR/dupes_${TIMESTAMP}.txt"
-  find "${ROOTS[@]}" -xdev -type f 2>/dev/null -printf '%s %p\n' | sort -n | awk '
-    { count[$1]++; files[$1]=(files[$1] ? files[$1] RS : "") $2 }
-    END { for (sz in count) if (count[sz]>1) print files[sz] }
-  ' > "$tmp_dupes"
-  log "[DEDUPE] Size-duplicate groups written to $tmp_dupes"
+  local tmp_report="$OUTDIR/duplicates_${TIMESTAMP}.json"
+  RUN_TIMESTAMP="$TIMESTAMP" python3 - "$tmp_report" "$MAX_DEPTH" "$MAX_NODES" "${ROOTS[@]}" <<'PY'
+import hashlib
+import json
+import os
+import sys
+from collections import defaultdict
+
+report_path = sys.argv[1]
+max_depth = int(sys.argv[2])
+max_nodes = int(sys.argv[3])
+roots = sys.argv[4:]
+if not roots:
+    roots = ['.']
+
+seen = defaultdict(list)
+visited = 0
+
+for root in roots:
+    if not os.path.isdir(root):
+        continue
+    for dirpath, dirnames, filenames in os.walk(root):
+        depth = dirpath.rstrip(os.sep).count(os.sep) - root.rstrip(os.sep).count(os.sep)
+        if depth >= max_depth:
+            dirnames[:] = []
+        for filename in filenames:
+            path = os.path.join(dirpath, filename)
+            try:
+                stat = os.stat(path)
+            except OSError:
+                continue
+            key = (stat.st_size,)
+            seen[key].append(path)
+            visited += 1
+            if visited >= max_nodes:
+                break
+        if visited >= max_nodes:
+            break
+
+candidates = []
+for paths in seen.values():
+    if len(paths) <= 1:
+        continue
+    # Hash to reduce false positives
+    hashes = defaultdict(list)
+    for path in paths:
+        hasher = hashlib.sha256()
+        try:
+            with open(path, 'rb') as fh:
+                for chunk in iter(lambda: fh.read(1024 * 1024), b''):
+                    hasher.update(chunk)
+        except OSError:
+            continue
+        hashes[hasher.hexdigest()].append(path)
+    for dup_paths in hashes.values():
+        if len(dup_paths) > 1:
+            candidates.append(dup_paths)
+
+with open(report_path, 'w', encoding='utf-8') as handle:
+    json.dump({"generated_at": os.environ.get("RUN_TIMESTAMP", ""),
+               "duplicate_groups": candidates}, handle, indent=2)
+PY
+  DUPLICATE_REPORT="$tmp_report"
+  audit "Duplicate candidates written to ${tmp_report}"
+  if [[ "$DRY_RUN" == true ]]; then
+    log "[DEDUPE] Dry-run mode active; no files were modified"
+  elif [[ "$YES" == true ]]; then
+    log "[DEDUPE] Run mode requested but destructive dedupe is not implemented; report only"
+  else
+    log "[DEDUPE] Run mode requested without --yes; report only"
+  fi
 }
 
-# --- Reporting: Modular, plug-in replaceable ---
 generate_report() {
-  local rpt="$OUTDIR/report_${TIMESTAMP}.txt"
-  echo "Agentic Run Report - $TIMESTAMP" > "$rpt"
-  echo "ROOTS: ${ROOTS[*]}" >> "$rpt"
-  echo "Deduplication: $DO_DEDUPE" >> "$rpt"
-  echo "Max Depth: $MAX_DEPTH" >> "$rpt"
-  echo "Max Nodes: $MAX_NODES" >> "$rpt"
-  echo "Dry Run: $DRY_RUN" >> "$rpt"
-  echo "Run Log: $LOG" >> "$rpt"
-  echo "Checkpoint: $CHECKPOINT" >> "$rpt"
-  echo "Plug-ins: $PLUGINS_DIR" >> "$rpt"
-  echo "Restart Count: $RESTART_COUNT" >> "$rpt"
-  log "[REPORT] Written $rpt"
+  cat >"$REPORT_PATH" <<REPORT
+Agentic Run Report - ${TIMESTAMP}
+ROOTS: ${ROOTS[*]}
+Deduplication enabled: ${DO_DEDUPE}
+Max Depth: ${MAX_DEPTH}
+Max Nodes: ${MAX_NODES}
+Dry Run: ${DRY_RUN}
+Run Log: ${LOG}
+Checkpoint: ${CHECKPOINT}
+Plug-ins directory: ${PLUGINS_DIR}
+Restart Count: ${RESTART_COUNT}
+Nodes Traversed: ${TRAVERSAL_COUNT}
+Duplicate Report: ${DUPLICATE_REPORT:-N/A}
+Last Signal: ${LAST_SIGNAL:-none}
+REPORT
+  audit "Report generated at ${REPORT_PATH}"
 }
 
-# --- Main unstoppable run loop ---
-while true; do
-  agent_main
-  sleep 1
-done
+run_tasklets() {
+  traverse_filesystem
+  if [[ "$DO_DEDUPE" == true ]]; then
+    dedupe_files
+  fi
+  generate_report
+}
 
-# --- References ---
-# See /reference vault for agentic patterns, Deadsnakes philosophy, scripting standards, and modular plug-in architecture best practices.
+log "[$$] ${AGENT_NAME} v${VERSION} starting (OUTDIR: ${OUTDIR})"
+run_tasklets
+log "[$$] ${AGENT_NAME} completed all tasklets"
+trap - EXIT
+write_checkpoint
+log "[EXIT] Agent run complete"
