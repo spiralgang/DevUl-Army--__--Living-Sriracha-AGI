@@ -14,6 +14,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Android](https://img.shields.io/badge/Platform-Android-green.svg)](https://android.com)
 [![Kotlin](https://img.shields.io/badge/Language-Kotlin-purple.svg)](https://kotlinlang.org)
+[![DevUl Army Auto Merge-Ahead & Prune Branches](https://github.com/spiralgang/DevUl-Army--__--Living-Sriracha-AGI/actions/workflows/auto-merge-prune.yml/badge.svg?event=workflow_run)](https://github.com/spiralgang/DevUl-Army--__--Living-Sriracha-AGI/actions/workflows/auto-merge-prune.yml)
 [![Agentic](https://img.shields.io/badge/AI-Agentic_Living_Code-orange.svg)](https://github.com/spiralgang/DevUtilityV2-InnovativeToolchestAI)
 
 [Features](#features) • [Installation](#installation) • [Documentation](#documentation) • [Contributing](#contributing)
