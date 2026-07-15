@@ -71,6 +71,8 @@ class LLMClient:
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", "replace")[:600]
             raise RuntimeError(f"LLM HTTP {e.code}: {detail}") from e
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"LLM connection failed: {e.reason}") from e
 
 
 # --- 1. load file + 2. fetch outside links ------------------------------------
