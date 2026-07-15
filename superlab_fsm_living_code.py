@@ -103,9 +103,8 @@ def audit_source(src: str) -> ast.Module:
             raise ValueError("child source may not import modules")
         if isinstance(n, ast.Name) and n.id in BANNED:
             raise ValueError(f"banned name {n.id}")
-        if isinstance(n, ast.Attribute) and n.attr in BANNED:
+        if isinstance(n, ast.Attribute) and (n.attr in BANNED or n.attr.startswith("_")):
             raise ValueError(f"banned attr {n.attr}")
-    return tree
 
 def safe_builtins() -> dict:
     real = __builtins__ if isinstance(__builtins__, dict) else vars(__builtins__)
