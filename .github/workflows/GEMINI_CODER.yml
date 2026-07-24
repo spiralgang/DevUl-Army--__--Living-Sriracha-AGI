@@ -1,0 +1,56 @@
+name: GEMINI_CODER.yml 
+on:
+  push:
+    branches:
+      - main
+jobs:
+  ai_fixer:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      - name: Setup Java
+        uses: actions/setup-java@v3
+        with:
+          java-version: '11'
+          distribution: 'adopt'
+      - name: Run AI Worker
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          # Install required packages
+          pip install openai
+          # Set up AI worker
+          python -c "
+            import os
+            from openai import api
+            api.api_key = os.getenv('GEMINI_API_KEY')
+            def get_fixes():
+              # Prompt the AI model to diagnose and fix the code
+              prompt = \"""
+              Diagnose and fix the Java code in the current directory.
+              ""\"
+              response = api.Completion.create(
+                model='gpt-4',
+                prompt=prompt,
+                temperature=0.1,
+                max_tokens=2048
+              )
+              return response.choices[0].text
+            fixes = get_fixes()
+            print(fixes)
+            # Apply the fixes
+            for fix in fixes.split('
+'):
+              if fix.startswith('git add'):
+                os.system(fix)
+              elif fix.startswith('git commit'):
+                os.system(fix)
+      - name: Build with Gradle
+        run: ./gradlew build
+      - name: Test with Gradle
+        run: ./gradlew test
+      - name: Push changes
+        uses: ad-m/github-push-action@v0.6.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
