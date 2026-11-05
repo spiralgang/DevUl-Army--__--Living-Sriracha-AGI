@@ -1,9 +1,9 @@
 name: Comprehensive Frontend-Backend Assimilation Audit
 # Referenced by: assimilation_validator_bridge for building environment integration
 on:
-  workflow_dispatch: true
+  workflow_dispatch:
     inputs:
-      pr: true
+      pr:
         description: PR number
         required: true
         type: string
