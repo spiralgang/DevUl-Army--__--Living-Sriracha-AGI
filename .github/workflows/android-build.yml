@@ -20,10 +20,8 @@ jobs:
         distribution: 'temurin'
         cache: gradle
 
-    - name: Setup Android SDK
-      uses: android-actions/setup-android@v3
-      with:
-        packages: tools, platform-tools, build-tools, platforms, cmdline-tools
+    # The ubuntu-latest image ships the Android SDK (ANDROID_HOME); android-actions/setup-android
+    # is blocked by this repo's allowed-actions policy and its default 'tools' package no longer exists.
 
     - name: Make Gradle executable
       run: chmod +x ./gradlew
